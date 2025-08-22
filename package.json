@@ -2,7 +2,6 @@
   "name": "bom-layering-project",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://christiaylor.github.io/BoM-Layers",
   "dependencies": {
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
