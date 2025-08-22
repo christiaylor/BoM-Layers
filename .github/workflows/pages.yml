@@ -17,33 +17,23 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CI: false
+      # If you didn't add "homepage" in package.json, set PUBLIC_URL instead:
+      # PUBLIC_URL: "https://<your-username>.github.io/<your-repo>"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: "npm"
-
-      - name: Install deps
-        run: npm ci
-
-      # If you DID NOT add "homepage" in package.json, uncomment next 3 lines:
-      # - name: Build
-      #   run: PUBLIC_URL="https://<your-username>.github.io/<your-repo>" npm run build
-
-      # If you DID add "homepage", keep this:
+      - name: Install dependencies
+        run: npm install # <-- change from 'npm ci'
       - name: Build
         run: npm run build
-
-      # SPA fallback so refresh on routes doesn't 404
       - name: Add SPA 404 fallback
         run: cp build/index.html build/404.html
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: ./build
 
