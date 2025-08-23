@@ -15,6 +15,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   ChevronDown,
+  HelpCircle,
 } from "lucide-react";
 
 // --- Firebase (v9 modular) imports ---
@@ -642,17 +643,20 @@ const AnalyticsPanel = ({ bookOfMormonData, onResultClick }) => {
   );
 };
 
-const LayersPanel = ({ layers, setLayers }) => {
+const LayersPanel = ({ layers, setLayers, addPanel }) => {
   const toggleLayer = (layerName) =>
     setLayers((prev) => ({ ...prev, [layerName]: !prev[layerName] }));
+
   return (
     <div>
       <h2 className="text-xl font-bold text-blue-300 mb-4">Content Layers</h2>
       <p className="text-sm text-gray-400 mb-4">
         Toggle layers to highlight specific content across all scripture
-        viewers.
+        viewers, or open helper tools.
       </p>
+
       <div className="space-y-3">
+        {/* Keep your existing Deity toggle */}
         <label className="flex items-center justify-between p-3 bg-gray-700 rounded-md cursor-pointer">
           <span className="font-semibold">References to Deity</span>
           <div className="relative">
@@ -666,39 +670,97 @@ const LayersPanel = ({ layers, setLayers }) => {
               className={`block w-14 h-8 rounded-full ${
                 layers.deity ? "bg-blue-600" : "bg-gray-600"
               }`}
-            ></div>
+            />
             <div
               className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${
                 layers.deity ? "transform translate-x-6" : ""
               }`}
-            ></div>
-          </div>
-        </label>
-        <label className="flex items-center justify-between p-3 bg-gray-700 rounded-md cursor-pointer">
-          <span className="font-semibold">Questions & Answers</span>
-          <div className="relative">
-            <input
-              type="checkbox"
-              className="sr-only"
-              checked={layers.qanda}
-              onChange={() => toggleLayer("qanda")}
             />
-            <div
-              className={`block w-14 h-8 rounded-full ${
-                layers.qanda ? "bg-blue-600" : "bg-gray-600"
-              }`}
-            ></div>
-            <div
-              className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${
-                layers.qanda ? "transform translate-x-6" : ""
-              }`}
-            ></div>
           </div>
         </label>
+
+        {/* NEW: Open Text Analytics from Layers */}
+        <button
+          onClick={() => addPanel("analytics")}
+          className="w-full flex items-center justify-between p-3 bg-gray-700 rounded-md hover:bg-gray-600 transition-colors"
+        >
+          <span className="font-semibold">Text Analytics</span>
+          <BarChart3 size={20} />
+        </button>
+
+        {/* Open Q&A viewer (unchanged) */}
+        <button
+          onClick={() => addPanel("qanda")}
+          className="w-full flex items-center justify-between p-3 bg-gray-700 rounded-md hover:bg-gray-600 transition-colors"
+        >
+          <span className="font-semibold">Questions & Answers</span>
+          <HelpCircle size={20} />
+        </button>
       </div>
     </div>
   );
 };
+
+const QandAPanel = ({ qandaData, onResultClick }) => {
+  const [openQuestion, setOpenQuestion] = useState(null); // index of the open question
+  return (
+    <div>
+      <h2 className="text-xl font-bold text-blue-300 mb-4">
+        Questions & Answers
+      </h2>
+      <p className="text-sm text-gray-400 mb-4">
+        Questions found in the text that are immediately followed by an answer.
+      </p>
+      <div className="space-y-2">
+        {qandaData.map((item, index) => (
+          <div
+            key={index}
+            className="bg-gray-900/50 rounded-md border border-gray-700/50"
+          >
+            <button
+              onClick={() =>
+                setOpenQuestion(openQuestion === index ? null : index)
+              }
+              className="w-full flex justify-between items-center p-3 text-left"
+            >
+              <span className="flex-1 pr-2">
+                {item.question.text}{" "}
+                <em className="text-gray-400 text-xs">
+                  ({item.question.reference})
+                </em>
+              </span>
+              <ChevronDown
+                className={`transition-transform ${
+                  openQuestion === index ? "rotate-180" : ""
+                }`}
+              />
+            </button>
+            {openQuestion === index && (
+              <div
+                onClick={() =>
+                  onResultClick(
+                    item.answer.book,
+                    item.answer.chapter,
+                    item.answer.verse
+                  )
+                }
+                className="p-3 border-t border-gray-700 cursor-pointer hover:bg-blue-900/30"
+              >
+                <p className="text-gray-300">
+                  {item.answer.text}{" "}
+                  <em className="text-gray-400 text-xs">
+                    ({item.answer.reference})
+                  </em>
+                </p>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const RecommendationsPanel = () => {
   const [uid, setUid] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
@@ -908,6 +970,35 @@ export default function App() {
       });
   }, []);
 
+  const qandaData = useMemo(() => {
+    if (isLoading) return [];
+    const results = [];
+    bookOfMormonData.books.forEach((book) => {
+      book.chapters.forEach((chapter) => {
+        for (let i = 0; i < chapter.verses.length - 1; i++) {
+          const currentVerse = chapter.verses[i];
+          const nextVerse = chapter.verses[i + 1];
+          if (currentVerse.text.trim().endsWith("?")) {
+            results.push({
+              question: {
+                text: currentVerse.text,
+                reference: currentVerse.reference,
+              },
+              answer: {
+                text: nextVerse.text,
+                reference: nextVerse.reference,
+                book: book.book,
+                chapter: chapter.chapter,
+                verse: nextVerse.verse,
+              },
+            });
+          }
+        }
+      });
+    });
+    return results;
+  }, [bookOfMormonData, isLoading]);
+
   const addPanel = (type, content = {}) => {
     const newPanel = {
       id: Date.now(),
@@ -1002,7 +1093,25 @@ export default function App() {
             icon={<Layers size={16} />}
             onClose={() => closePanel(panel.id)}
           >
-            <LayersPanel layers={layers} setLayers={setLayers} />
+            <LayersPanel
+              layers={layers}
+              setLayers={setLayers}
+              addPanel={addPanel}
+            />
+          </Panel>
+        );
+
+      case "qanda":
+        return (
+          <Panel
+            title="Questions & Answers"
+            icon={<HelpCircle size={16} />}
+            onClose={() => closePanel(panel.id)}
+          >
+            <QandAPanel
+              qandaData={qandaData}
+              onResultClick={handleJumpToVerse}
+            />
           </Panel>
         );
       case "recommendations":
@@ -1059,13 +1168,13 @@ export default function App() {
             <Search size={20} />
             {isSidebarOpen && <span className="font-semibold">Search</span>}
           </button>
-          <button
+          {/* <button
             onClick={() => addPanel("analytics")}
             className="w-full flex items-center gap-3 p-3 rounded-md bg-blue-600/80 hover:bg-blue-600 transition-colors"
           >
             <BarChart3 size={20} />
             {isSidebarOpen && <span className="font-semibold">Analytics</span>}
-          </button>
+          </button> */}
           <button
             onClick={() => addPanel("layers")}
             className="w-full flex items-center gap-3 p-3 rounded-md bg-blue-600/80 hover:bg-blue-600 transition-colors"
