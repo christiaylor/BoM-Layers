@@ -17,6 +17,22 @@ import {
   ChevronDown,
 } from "lucide-react";
 
+// --- Firebase (v9 modular) imports ---
+import { onAuthStateChanged, signInAnonymously } from "firebase/auth";
+import {
+  collection,
+  addDoc,
+  serverTimestamp,
+  query,
+  orderBy,
+  onSnapshot,
+  doc,
+  runTransaction,
+} from "firebase/firestore";
+import { auth, db } from "./firebaseClient";
+
+// Get a reference to the Firestore service
+
 // --- Components ---
 
 // Splash Screen Component
@@ -683,92 +699,127 @@ const LayersPanel = ({ layers, setLayers }) => {
     </div>
   );
 };
-
 const RecommendationsPanel = () => {
-  const SUGGESTIONS_KEY = "bom-layering-suggestions";
-  const VOTES_KEY = "bom-layering-votes";
-
-  const [suggestions, setSuggestions] = useState(() => {
-    try {
-      const localData = localStorage.getItem(SUGGESTIONS_KEY);
-      return localData ? JSON.parse(localData) : [];
-    } catch (error) {
-      return [];
-    }
-  });
+  const [uid, setUid] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
   const [newSuggestion, setNewSuggestion] = useState("");
-  const [userVotes, setUserVotes] = useState(() => {
-    try {
-      const localData = localStorage.getItem(VOTES_KEY);
-      return localData ? JSON.parse(localData) : {};
-    } catch (error) {
-      return {};
-    }
-  });
 
+  // 1) Ensure the user is signed in (anonymous is fine)
   useEffect(() => {
-    localStorage.setItem(SUGGESTIONS_KEY, JSON.stringify(suggestions));
-  }, [suggestions]);
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setUid(user.uid);
+      } else {
+        signInAnonymously(auth).catch(console.error);
+      }
+    });
+    return () => unsub && unsub();
+  }, []);
 
+  // 2) Live stream the recommendations feed
   useEffect(() => {
-    localStorage.setItem(VOTES_KEY, JSON.stringify(userVotes));
-  }, [userVotes]);
-
-  const handleVote = (suggestionId, direction) => {
-    const currentVote = userVotes[suggestionId];
-    let newSuggestions = [...suggestions];
-    const suggestionIndex = newSuggestions.findIndex(
-      (s) => s.id === suggestionId
+    const q = query(
+      collection(db, "recommendations"),
+      // TEMP: comment score ordering while we debug
+      // orderBy("score", "desc"),
+      orderBy("createdAt", "desc")
     );
-    if (suggestionIndex === -1) return;
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        console.log("[onSnapshot] docs:", snap.size);
+        const rows = [];
+        snap.forEach((d) => rows.push({ id: d.id, ...d.data() }));
+        setSuggestions(rows);
+      },
+      (err) => {
+        console.error("[onSnapshot] error", err);
+        alert("Feed failed: " + (err?.message || err));
+      }
+    );
+    return () => unsub();
+  }, []);
 
-    let suggestion = { ...newSuggestions[suggestionIndex] };
-    let newVoteState = { ...userVotes };
-
-    // Revert current vote if it exists
-    if (currentVote === "up") suggestion.upvotes--;
-    if (currentVote === "down") suggestion.downvotes--;
-
-    if (currentVote === direction) {
-      // Undoing vote
-      delete newVoteState[suggestionId];
-    } else {
-      // New vote or switching vote
-      if (direction === "up") suggestion.upvotes++;
-      if (direction === "down") suggestion.downvotes++;
-      newVoteState[suggestionId] = direction;
-    }
-
-    if (suggestion.downvotes > suggestion.upvotes) {
-      newSuggestions.splice(suggestionIndex, 1);
-    } else {
-      newSuggestions[suggestionIndex] = suggestion;
-    }
-
-    setSuggestions(newSuggestions);
-    setUserVotes(newVoteState);
-  };
-
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!newSuggestion.trim()) return;
-    const newSugg = {
-      id: Date.now(),
-      text: newSuggestion,
-      upvotes: 0,
-      downvotes: 0,
-    };
-    setSuggestions([...suggestions, newSugg]);
-    setNewSuggestion("");
+
+    try {
+      // self-heal: sign in if not signed in yet
+      let userId = uid;
+      if (!userId) {
+        const cred = await signInAnonymously(auth);
+        userId = cred.user.uid;
+        setUid(userId);
+        console.log("[auth] signed in with Anonymous ID: ", userId);
+      }
+
+      await addDoc(collection(db, "recommendations"), {
+        text: newSuggestion.trim(),
+        authorId: userId,
+        upvotes: 0,
+        downvotes: 0,
+        score: 0,
+        createdAt: serverTimestamp(),
+      });
+      setNewSuggestion("");
+    } catch (err) {
+      console.error("[addDoc] failed", err);
+      alert("Could not add suggestion: " + (err?.message || err));
+    }
+  };
+
+  // Vote logic: store a per-user vote doc in a subcollection for each rec
+  const handleVote = async (recId, direction /* 'up' | 'down' */) => {
+    if (!uid) return;
+    const recRef = doc(db, "recommendations", recId);
+    const voteRef = doc(db, "recommendations", recId, "votes", uid);
+
+    await runTransaction(db, async (tx) => {
+      const [recSnap, voteSnap] = await Promise.all([
+        tx.get(recRef),
+        tx.get(voteRef),
+      ]);
+      if (!recSnap.exists()) return;
+
+      let data = recSnap.data() || {};
+      let upvotes = data.upvotes || 0;
+      let downvotes = data.downvotes || 0;
+
+      const prev = voteSnap.exists() ? (voteSnap.data() || {}).direction : null;
+      let newDir = direction;
+
+      // Clicking same again removes the vote
+      if (prev === direction) newDir = null;
+
+      // Remove previous
+      if (prev === "up") upvotes -= 1;
+      if (prev === "down") downvotes -= 1;
+
+      // Add new (if any)
+      if (newDir === "up") upvotes += 1;
+      if (newDir === "down") downvotes += 1;
+
+      const score = upvotes - downvotes;
+
+      tx.update(recRef, { upvotes, downvotes, score });
+
+      if (newDir) {
+        tx.set(voteRef, { direction: newDir });
+      } else if (voteSnap.exists()) {
+        tx.delete(voteRef);
+      }
+    });
   };
 
   return (
     <div>
       <h2 className="text-xl font-bold text-blue-300 mb-4">Recommendations</h2>
       <p className="text-sm text-gray-400 mb-4">
-        Suggestions are stored in your browser and will be cleared if you clear
-        your cache.
+        Collaborative & real-time. Signed in{" "}
+        {uid ? `as ${uid.slice(0, 6)}…` : "…"}
       </p>
+
       <form onSubmit={handleSubmit} className="flex gap-2 mb-4">
         <input
           type="text"
@@ -780,13 +831,16 @@ const RecommendationsPanel = () => {
         <button
           type="submit"
           className="p-2 bg-green-600 hover:bg-green-500 rounded-md"
+          disabled={!newSuggestion.trim()}
+          title={!uid ? "Signing in..." : ""}
         >
           <Plus size={20} />
         </button>
       </form>
+
       <div className="space-y-3">
         {suggestions
-          .sort((a, b) => b.upvotes - b.downvotes - (a.upvotes - a.downvotes))
+          .filter((s) => (typeof s.score === "number" ? s.score >= 0 : true))
           .map((s) => (
             <div
               key={s.id}
@@ -796,23 +850,17 @@ const RecommendationsPanel = () => {
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => handleVote(s.id, "up")}
-                  className={`flex items-center gap-1 ${
-                    userVotes[s.id] === "up"
-                      ? "text-green-400"
-                      : "text-gray-400"
-                  }`}
+                  className="flex items-center gap-1 text-gray-200 hover:text-green-400"
+                  title="Upvote"
                 >
-                  <ThumbsUp size={16} /> {s.upvotes}
+                  <ThumbsUp size={16} /> {s.upvotes ?? 0}
                 </button>
                 <button
                   onClick={() => handleVote(s.id, "down")}
-                  className={`flex items-center gap-1 ${
-                    userVotes[s.id] === "down"
-                      ? "text-red-400"
-                      : "text-gray-400"
-                  }`}
+                  className="flex items-center gap-1 text-gray-200 hover:text-red-400"
+                  title="Downvote"
                 >
-                  <ThumbsDown size={16} /> {s.downvotes}
+                  <ThumbsDown size={16} /> {s.downvotes ?? 0}
                 </button>
               </div>
             </div>
